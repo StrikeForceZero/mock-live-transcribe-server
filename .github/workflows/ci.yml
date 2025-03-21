@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v3
+
+      - name: 🟢 Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: 📦 Install dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+          pnpm install
+
+      - name: 🧹 Check Prettier formatting
+        run: pnpm format:check
+
+      - name: 🧼 Run linter
+        run: pnpm lint
+
+      - name: ✅ Type check
+        run: pnpm tsc
+
+      - name: 🧪 Run tests
+        run: pnpm test
