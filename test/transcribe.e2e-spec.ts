@@ -22,7 +22,6 @@ import { BufferCounter, bufferTextOrThrow, IWrap } from '@util/buffer';
 import { delay } from '@util/delay';
 import { timeout } from '@util/timeout';
 import { Queue } from '@util/queue';
-import console from 'node:console';
 
 const limit = pLimit(1);
 
