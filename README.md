@@ -79,11 +79,11 @@ or
 
 # Demo
 
-`pnpm demo`
+`pnpm demo-simple`
 or
-`pnpm tsx src/demo.ts`
+`pnpm tsx src/demo-simple.ts`
 
-The demo:
+The simple demo:
 
 - creates the server
 - connects 2 users to the wss

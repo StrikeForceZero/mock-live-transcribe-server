@@ -9,7 +9,7 @@
   "main": "src/main.ts",
   "scripts": {
     "start": "tsx .",
-    "demo": "tsx src/demo.ts",
+    "demo:simple": "tsx src/demo-simple.ts",
     "lint": "eslint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
