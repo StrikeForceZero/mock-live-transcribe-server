@@ -11,7 +11,7 @@ import {
 import { timeout } from '@util/timeout';
 import { getTokenFromAuthorization, getUserIdFromToken } from '@server/auth';
 import * as transcribeService from '@server/services/trascribeService';
-import { userId, UserId } from '@server/types';
+import { UserId } from '@server/types';
 
 export enum WsCloseCode {
   Normal = 1000,
