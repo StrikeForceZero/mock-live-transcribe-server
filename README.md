@@ -80,6 +80,7 @@ or
 # Demo
 
 ## Simple
+
 `pnpm demo:simple`
 or
 `pnpm tsx src/demo-simple.ts`
@@ -110,6 +111,8 @@ The concurrent demo:
 - each user concurrently sends a random amount of bytes (16k - 160k)
 - each user logs transcriptions as they receive them
 - demo ends after both users are disconnected from exhausting their usage
+
+a proper job queue library would probably avoid: `(node:14540) MaxListenersExceededWarning: Possible EventTarget memory leak detected. 11 abort listeners added to [AbortSignal]. Use events.setMaxListeners() to increase limit`
 
 # Tests
 
