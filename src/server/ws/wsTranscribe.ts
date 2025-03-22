@@ -73,7 +73,8 @@ export function bufferFromRawData(rawData: RawData): Buffer {
 
 const USER_ID_SOCKET_MAP: Record<UserId, WebSocket | undefined> = {};
 
-function registerSocketForUserId(clientSocket: WebSocket, userId: UserId) {
+function registerSocketForUserId(clientSocket: AuthenticatedWebSocket) {
+  const userId = getUserIdFromSocketOrThrow(clientSocket);
   const existingSocket = USER_ID_SOCKET_MAP[userId];
   if (existingSocket) {
     existingSocket.close(
@@ -154,10 +155,22 @@ function isOpen(socket: WebSocket): boolean {
   return socket.readyState === WebSocket.OPEN;
 }
 
-async function validateUsageRemaining(
-  clientSocket: AuthenticatedWebSocket,
-  userId: UserId,
-) {
+function getUserIdFromSocketOrThrow(
+  clientSocket: WebSocket | AuthenticatedWebSocket,
+): UserId {
+  if (
+    clientSocket instanceof WebSocket &&
+    'user' in clientSocket &&
+    typeof clientSocket.user !== 'undefined' &&
+    clientSocket.user != null
+  ) {
+    return clientSocket.user.id;
+  }
+  throw new Error('expected socket with user');
+}
+
+async function validateUsageRemaining(clientSocket: AuthenticatedWebSocket) {
+  const userId = getUserIdFromSocketOrThrow(clientSocket);
   const usageData = await usageService.getUsage(userId).catch((err) => {
     console.error('error when checking usage: ', err);
     throw err;
@@ -176,65 +189,64 @@ async function validateUsageRemaining(
   }
 }
 
-function handleCloseFactory(userId: UserId): () => void {
-  return () => {
-    delete USER_ID_SOCKET_MAP[userId];
-  };
+function clientSocketCloseHandler(this: AuthenticatedWebSocket): void {
+  const userId = getUserIdFromSocketOrThrow(this);
+  delete USER_ID_SOCKET_MAP[userId];
 }
 
-function handleMessageFactory(
-  userId: UserId,
-): (this: AuthenticatedWebSocket, data: RawData) => void {
-  return function (this: AuthenticatedWebSocket, data) {
-    if (!isReady(this)) {
-      return closeWithError(this, WsCloseCode.PolicyViolation, {
-        error: 'not ready',
-        code: InternalErrorCode.NotReady,
-      });
-    }
-    const buffer = bufferFromRawData(data);
-    const abortController = new AbortController();
-    void (async () => {
-      const unExpectedCloseHandler = () => abortController.abort();
-      this.once('close', unExpectedCloseHandler);
-      try {
-        // TODO: use a queue and offload packets to the filesystem if overloaded, this also ensures transcriptions are processed and returned in order
-        //  or add some form of counter to the requests sent from the client so the server can return them in the correct order
-        // TODO: mutex / lock for each user to prevent over usage or estimate the usage and subtract it from allowance up front
-        const result = await timeout(60_000, (abortSignal) => {
-          return transcribeService.transcribeForUser({
-            audioPacket: buffer,
-            userId,
-            abortSignal,
-          });
+function clientSocketMessageHandler(
+  this: AuthenticatedWebSocket,
+  data: RawData,
+): void {
+  const userId = getUserIdFromSocketOrThrow(this);
+  if (!isReady(this)) {
+    return closeWithError(this, WsCloseCode.PolicyViolation, {
+      error: 'not ready',
+      code: InternalErrorCode.NotReady,
+    });
+  }
+  const buffer = bufferFromRawData(data);
+  const abortController = new AbortController();
+  void (async () => {
+    const unExpectedCloseHandler = () => abortController.abort();
+    this.once('close', unExpectedCloseHandler);
+    try {
+      // TODO: use a queue and offload packets to the filesystem if overloaded, this also ensures transcriptions are processed and returned in order
+      //  or add some form of counter to the requests sent from the client so the server can return them in the correct order
+      // TODO: mutex / lock for each user to prevent over usage or estimate the usage and subtract it from allowance up front
+      const result = await timeout(60_000, (abortSignal) => {
+        return transcribeService.transcribeForUser({
+          audioPacket: buffer,
+          userId,
+          abortSignal,
         });
-        if (!isOpen(this)) {
-          // socket closed while we were processing
-          // TODO: cache result for limited time and propagate during reconnect
-          // noinspection ExceptionCaughtLocallyJS
-          throw new ConnectionClosedUnexpectedlyError(
-            'Socket closed while processing',
-          );
-        }
-        await sendData(this, result);
-        if (result.usageRemainingMs <= 0) {
-          return closeWithError(this, WsCloseCode.PolicyViolation, {
-            error: 'Exceeded allocated usage',
-            code: InternalErrorCode.ExceededAllocatedUsageError,
-          });
-        }
-      } catch (err) {
-        if (!isOpen(this)) {
-          // don't attempt to propagate the error if the client disconnected
-          return;
-        }
-        // TODO: refund user if server closing or server error
-        handleTranscribeError(err, this);
-      } finally {
-        this.off('close', unExpectedCloseHandler);
+      });
+      if (!isOpen(this)) {
+        // socket closed while we were processing
+        // TODO: cache result for limited time and propagate during reconnect
+        // noinspection ExceptionCaughtLocallyJS
+        throw new ConnectionClosedUnexpectedlyError(
+          'Socket closed while processing',
+        );
       }
-    })();
-  };
+      await sendData(this, result);
+      if (result.usageRemainingMs <= 0) {
+        return closeWithError(this, WsCloseCode.PolicyViolation, {
+          error: 'Exceeded allocated usage',
+          code: InternalErrorCode.ExceededAllocatedUsageError,
+        });
+      }
+    } catch (err) {
+      if (!isOpen(this)) {
+        // don't attempt to propagate the error if the client disconnected
+        return;
+      }
+      // TODO: refund user if server closing or server error
+      handleTranscribeError(err, this);
+    } finally {
+      this.off('close', unExpectedCloseHandler);
+    }
+  })();
 }
 
 function isReady(clientSocket: AuthenticatedWebSocket): boolean {
@@ -255,14 +267,13 @@ function handleConnection(
     });
   }
 
-  const userId = clientSocket.user.id;
-  registerSocketForUserId(clientSocket, userId);
-  const closeHandler = handleCloseFactory(userId);
-  const messageHandler = handleMessageFactory(userId).bind(clientSocket);
+  registerSocketForUserId(clientSocket);
+  const closeHandler = clientSocketCloseHandler.bind(clientSocket);
+  const messageHandler = clientSocketMessageHandler.bind(clientSocket);
   clientSocket.once('close', closeHandler);
   clientSocket.on('message', messageHandler);
 
-  void validateUsageRemaining(clientSocket, userId);
+  void validateUsageRemaining(clientSocket);
 }
 
 function shutdownFactory(wss: WebSocketServer): () => Promise<void> {
