@@ -24,7 +24,7 @@ function setupHandlers(ws: WebSocket, label: string) {
       console.log(`${label} ready`);
       const abortController = new AbortController();
       let sent = 0;
-      let recieved = 0;
+      let received = 0;
       ws.once('close', (code, reason) => {
         abortController.abort();
         console.log(`${label} disconnected`);
@@ -33,9 +33,9 @@ function setupHandlers(ws: WebSocket, label: string) {
       });
       ws.on('message', (data) => {
         const message = bufferTextOrThrow(bufferFromRawData(data));
-        recieved += 1;
+        received += 1;
         console.log(
-          `${label} (sent: ${sent}, recv: ${recieved}) received: ${message}`,
+          `${label} (sent: ${sent}, recv: ${received}) received: ${message}`,
         );
       });
       void (async () => {
@@ -50,7 +50,7 @@ function setupHandlers(ws: WebSocket, label: string) {
           const payload = bufferCounter.wrap(Buffer.alloc(bytes));
           sent += 1;
           console.log(
-            `${label} (sent: ${sent}, recv: ${recieved}) sending id: ${bufferCounter.lastId}, bytes: ${bytes}`,
+            `${label} (sent: ${sent}, recv: ${received}) sending id: ${bufferCounter.lastId}, bytes: ${bytes}`,
           );
           ws.send(payload);
           await delay((bytes / BYTES_PER_WORD) * MS_PER_WORD);
