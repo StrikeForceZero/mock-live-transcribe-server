@@ -44,6 +44,10 @@ export default tseslint.config(
           caughtErrorsIgnorePattern: '^_',
         },
       ],
+      eqeqeq: ['error', 'always'],
+      curly: 'error',
+      'no-var': 'error',
+      'prefer-const': 'error',
     },
   },
 );
