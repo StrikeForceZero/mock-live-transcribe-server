@@ -49,7 +49,7 @@ describe('abort', () => {
     abortController.abort();
     await expect(rejectOnAbortObj.promise).resolves.toBeUndefined();
   });
-  it('should cleanup - onAbort', async () => {
+  it('should cleanup - onAbort', () => {
     const cb = jest.fn();
     const cleanup = onAbort(abortController.signal, cb);
     cleanup?.();
