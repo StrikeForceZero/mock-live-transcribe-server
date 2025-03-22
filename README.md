@@ -112,8 +112,6 @@ The concurrent demo:
 - each user logs transcriptions as they receive them
 - demo ends after both users are disconnected from exhausting their usage
 
-a proper job queue library would probably avoid: `(node:14540) MaxListenersExceededWarning: Possible EventTarget memory leak detected. 11 abort listeners added to [AbortSignal]. Use events.setMaxListeners() to increase limit`
-
 # Tests
 
 `pnpm test`

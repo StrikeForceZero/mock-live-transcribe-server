@@ -27,7 +27,7 @@ describe('abort', () => {
     expect(cb).not.toHaveBeenCalled();
   });
   it('should reject on abort', () => {
-    const promise = rejectOnAbort(abortController.signal);
+    const promise = rejectOnAbort(abortController.signal).promise;
     abortController.abort();
     return expect(promise).rejects.toThrow('aborted');
   });
@@ -39,8 +39,21 @@ describe('abort', () => {
   });
   it('should reject with error on already aborted', async () => {
     abortController.abort();
-    await expect(rejectOnAbort(abortController.signal)).rejects.toThrow(
+    await expect(rejectOnAbort(abortController.signal).promise).rejects.toThrow(
       'already aborted',
     );
+  });
+  it('should cleanup - rejectOnAbort', async () => {
+    const rejectOnAbortObj = rejectOnAbort(abortController.signal, true, true);
+    rejectOnAbortObj.cancel();
+    abortController.abort();
+    await expect(rejectOnAbortObj.promise).resolves.toBeUndefined();
+  });
+  it('should cleanup - onAbort', async () => {
+    const cb = jest.fn();
+    const cleanup = onAbort(abortController.signal, cb);
+    cleanup?.();
+    abortController.abort();
+    expect(cb).not.toHaveBeenCalled();
   });
 });

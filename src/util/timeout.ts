@@ -28,32 +28,34 @@ export function timeout<T>(
     wasTimeout = true;
     abortController.abort();
   });
-  onAbort(
+  const cleanup = onAbort(
     abortController.signal,
     () => {
       clearTimeout(timeout.timeout);
     },
     opt.allowAlreadyAborted,
   );
+  const rejectOnAbortObj = rejectOnAbort(abortController.signal);
   return Promise.race([
     fn(abortController.signal),
     // pretend its Promise<T> because it will always reject
-    rejectOnAbort(abortController.signal, opt.allowAlreadyAborted).catch(
-      (err: unknown) => {
-        let error: Error;
+    rejectOnAbortObj.promise.catch((err: unknown) => {
+      let error: Error;
 
-        if (wasTimeout) {
-          error = new TimeoutError('timeout');
-        } else if (err instanceof Error) {
-          error = err;
-        } else if (typeof err === 'object' && err !== null) {
-          error = new Error(JSON.stringify(err));
-        } else {
-          error = new Error(String(err));
-        }
+      if (wasTimeout) {
+        error = new TimeoutError('timeout');
+      } else if (err instanceof Error) {
+        error = err;
+      } else if (typeof err === 'object' && err !== null) {
+        error = new Error(JSON.stringify(err));
+      } else {
+        error = new Error(String(err));
+      }
 
-        return Promise.reject(error);
-      },
-    ) as Promise<T>,
-  ]);
+      return Promise.reject(error);
+    }) as Promise<T>,
+  ]).finally(() => {
+    cleanup?.();
+    rejectOnAbortObj.cancel();
+  });
 }

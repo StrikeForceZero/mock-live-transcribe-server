@@ -319,7 +319,7 @@ async function processTranscribe(
     throw new Error('client socket gone');
   }
   const abortController = new AbortController();
-  onAbort(mainAbortSignal, () => {
+  const cleanup = onAbort(mainAbortSignal, () => {
     abortController.abort();
   });
   const unExpectedCloseHandler = () => abortController.abort();
@@ -355,6 +355,7 @@ async function processTranscribe(
     // TODO: refund user if server closing or server error
     handleTranscribeError(err, clientSocket);
   } finally {
+    cleanup?.();
     clientSocket.off('close', unExpectedCloseHandler);
   }
 }
@@ -422,7 +423,13 @@ async function queueRunner(
         }),
       );
       if (set.size === maxConcurrent) {
-        await Promise.race([rejectOnAbort(mainAbortSignal), Promise.any(set)]);
+        const rejectOnAbortObj = rejectOnAbort(mainAbortSignal);
+        await Promise.race([
+          rejectOnAbortObj.promise,
+          Promise.any(set),
+        ]).finally(() => {
+          rejectOnAbortObj.cancel();
+        });
         set.clear();
       }
     }

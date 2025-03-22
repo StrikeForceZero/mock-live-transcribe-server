@@ -45,7 +45,12 @@ async function fakeTranscribe(
     if (abortSignal.aborted) {
       throw new Error('Aborted');
     }
-    await Promise.race([transcribeProcess, rejectOnAbort(abortSignal)]);
+    const rejectOnAbortObj = rejectOnAbort(abortSignal);
+    await Promise.race([transcribeProcess, rejectOnAbortObj.promise]).finally(
+      () => {
+        rejectOnAbortObj.cancel();
+      },
+    );
   } else {
     await transcribeProcess;
   }
