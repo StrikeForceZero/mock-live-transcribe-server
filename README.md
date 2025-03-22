@@ -38,6 +38,7 @@
       - offloading data to temp files if queue is backed up
       - ~~prevent client from getting transcription results out of order~~
       - if packets don't have pauses or breaks at start/end then join them until one is found so words aren't missed
+    - some utils and other areas could be cleaned up and don't have the best structure due to time constraints / iterations
 - **Misc**
   - Opaque/Tagged Types used for `UserId`
   - pLimit used in e2e test to limit max concurrency to 1
