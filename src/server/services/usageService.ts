@@ -20,9 +20,9 @@ export const MEMORY_STORAGE: Record<UserId, UsageData | undefined> = {
   [userId('2')]: createUsage(STARTING_USAGE_LIMIT_MS),
 };
 
-export function resetStorage(): void {
-  MEMORY_STORAGE[userId('1')] = createUsage(STARTING_USAGE_LIMIT_MS);
-  MEMORY_STORAGE[userId('2')] = createUsage(STARTING_USAGE_LIMIT_MS);
+export function resetStorage(maxUsage = STARTING_USAGE_LIMIT_MS): void {
+  MEMORY_STORAGE[userId('1')] = createUsage(maxUsage);
+  MEMORY_STORAGE[userId('2')] = createUsage(maxUsage);
 }
 
 resetStorage();

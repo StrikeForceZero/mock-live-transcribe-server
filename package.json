@@ -10,6 +10,7 @@
   "scripts": {
     "start": "tsx .",
     "demo:simple": "tsx src/demo-simple.ts",
+    "demo:concurrent": "tsx src/demo-concurrent.ts",
     "lint": "eslint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

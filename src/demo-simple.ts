@@ -1,86 +1,31 @@
 import * as console from 'node:console';
 import { RawData, WebSocket } from 'ws';
 import { createServer } from '@server';
-import { UsageResponse } from '@server/controllers/usageController';
 import {
   BYTES_PER_WORD,
   estimateUsageMs,
   MS_PER_WORD,
   TranscribeResponse,
 } from '@server/services/trascribeService';
-import {
-  STARTING_USAGE_LIMIT_MS,
-  UsageData,
-} from '@server/services/usageService';
+import { STARTING_USAGE_LIMIT_MS } from '@server/services/usageService';
 import { bufferFromRawData } from '@server/ws/wsTranscribe';
 import { BufferCounter, bufferTextOrThrow } from '@util/buffer';
 import { timeout } from '@util/timeout';
-
-const HOST = 'localhost:3000';
-const API_USAGE_URL = `http://${HOST}/api/usage`;
-const WS_TRANSCRIBE_URL = `ws://${HOST}/transcribe`;
-const USER_1_TOKEN = 'Bearer a';
-const USER_2_TOKEN = 'Bearer b';
-
-async function fetchUsageData(token: string): Promise<UsageData> {
-  const response = await fetch(API_USAGE_URL, {
-    method: 'GET',
-    headers: {
-      authorization: token,
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`fetchUsage response.status: ${response.status}`);
-  }
-  // TODO: validate with zod
-  const usageResponse = (await response.json()) as UsageResponse;
-  return usageResponse.usage;
-}
-
-function createWs(token: string): WebSocket {
-  return new WebSocket(WS_TRANSCRIBE_URL, {
-    headers: {
-      authorization: token,
-    },
-  });
-}
-
-async function logStatusAndExecute<T>(
-  message: string,
-  promise: Promise<T>,
-): Promise<T> {
-  process.stdout.write(`${message}... `);
-  try {
-    const result = await promise;
-    process.stdout.write('done.');
-    return result;
-  } catch (err) {
-    process.stdout.write('failed.\n');
-    console.error(err);
-    throw err;
-  } finally {
-    process.stdout.write('\n');
-  }
-}
-
-function isReady(rawData: RawData): boolean {
-  const buffer = bufferFromRawData(rawData);
-  const bufferString = bufferTextOrThrow(buffer);
-  const message = JSON.parse(bufferString) as unknown;
-  return (
-    typeof message === 'object' &&
-    message !== null &&
-    'event' in message &&
-    message.event === 'ready'
-  );
-}
+import {
+  createWs,
+  fetchUsageData,
+  isReadyMessage,
+  logStatusAndExecute,
+  USER_1_TOKEN,
+  USER_2_TOKEN,
+} from '@util/demo';
 
 async function connectWs(token: string): Promise<WebSocket> {
   const ws = createWs(token);
   const promise = new Promise<WebSocket>((resolve, reject) => {
     ws.once('open', () => {
       ws.once('message', (data) => {
-        if (isReady(data)) {
+        if (isReadyMessage(data)) {
           return resolve(ws);
         }
         reject(new Error('unexpected message'));

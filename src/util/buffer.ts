@@ -28,9 +28,12 @@ export interface IWrap {
 }
 
 export class BufferCounter implements IWrap {
-  constructor(private lastId = 0) {}
+  constructor(private _lastId = 0) {}
   wrap(buffer: Buffer): Buffer {
-    this.lastId += 1;
-    return insertIdIntoBuffer(this.lastId, buffer);
+    this._lastId += 1;
+    return insertIdIntoBuffer(this._lastId, buffer);
+  }
+  get lastId() {
+    return this._lastId;
   }
 }

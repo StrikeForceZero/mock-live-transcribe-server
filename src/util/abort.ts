@@ -11,8 +11,10 @@ export function rejectOnAbort(
     throw new AbortedError('already aborted');
   }
   return new Promise<void>((_, reject) =>
-    abortSignal.addEventListener('abort', () =>
-      reject(new AbortedError('aborted')),
+    abortSignal.addEventListener(
+      'abort',
+      () => reject(new AbortedError('aborted')),
+      { once: true },
     ),
   );
 }
@@ -29,5 +31,5 @@ export function onAbort(
     }
     throw new AbortedError('already aborted');
   }
-  abortSignal.addEventListener('abort', callback);
+  abortSignal.addEventListener('abort', callback, { once: true });
 }

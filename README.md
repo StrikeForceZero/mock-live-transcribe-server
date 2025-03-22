@@ -79,7 +79,8 @@ or
 
 # Demo
 
-`pnpm demo-simple`
+## Simple
+`pnpm demo:simple`
 or
 `pnpm tsx src/demo-simple.ts`
 
@@ -94,6 +95,21 @@ The simple demo:
 - server shuts down
 
 Authentication, concurrent users, and usage exhaustion enforcement - is tested in the [transcribe e2e test](./test/transcribe.e2e-spec.ts)
+
+## Concurrent
+
+`pnpm demo:concurrent`
+or
+`pnpm tsx src/demo-concurrent.ts`
+
+The concurrent demo:
+
+- increases max usage limits to 60s
+- creates the server
+- connects 2 users to the wss
+- each user concurrently sends a random amount of bytes (16k - 160k)
+- each user logs transcriptions as they receive them
+- demo ends after both users are disconnected from exhausting their usage
 
 # Tests
 
