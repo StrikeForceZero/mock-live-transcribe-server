@@ -216,6 +216,8 @@ export function setupWebSocket(server: Server) {
             clientDisconnected = true;
             abortController.abort();
           });
+          // TODO: use a queue and offload packets to the filesystem if overloaded, this also ensures transcriptions are processed and returned in order
+          //  or add some form of counter to the requests sent from the client so the server can return them in the correct order
           // TODO: mutex / lock for each user to prevent over usage or estimate the usage and subtract it from allowance up front
           const result = await timeout(60_000, (abortSignal) => {
             return transcribeService.transcribeForUser({
