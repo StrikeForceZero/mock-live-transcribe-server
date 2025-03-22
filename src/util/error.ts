@@ -55,6 +55,17 @@ export class ConnectionClosedUnexpectedlyError extends Error {
   }
 }
 
+export class InvalidData extends Error {
+  constructor(message: string) {
+    super(message);
+    // breaks if minified
+    this.name = new.target.name;
+
+    // Restore prototype chain (fix for transpiled JS environments)
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 export class ExceededAllocatedUsageError extends Error {
   constructor(message: string) {
     super(message);

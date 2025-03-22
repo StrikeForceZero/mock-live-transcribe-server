@@ -6,3 +6,31 @@ export function bufferTextOrThrow(buffer: Buffer): string {
   }
   return buffer.toString('utf8');
 }
+
+export function insertIdIntoBuffer(id: number, buffer: Buffer): Buffer {
+  const idBuffer = Buffer.alloc(4);
+  idBuffer.writeUInt32BE(id);
+  return Buffer.concat([idBuffer, buffer]);
+}
+
+export function getIdFromBuffer(buffer: Buffer): {
+  id: number;
+  data: Buffer<ArrayBufferLike>;
+} {
+  return {
+    id: buffer.readUInt32BE(0),
+    data: buffer.subarray(4),
+  };
+}
+
+export interface IWrap {
+  wrap(buffer: Buffer): Buffer;
+}
+
+export class BufferCounter implements IWrap {
+  constructor(private lastId = 0) {}
+  wrap(buffer: Buffer): Buffer {
+    this.lastId += 1;
+    return insertIdIntoBuffer(this.lastId, buffer);
+  }
+}

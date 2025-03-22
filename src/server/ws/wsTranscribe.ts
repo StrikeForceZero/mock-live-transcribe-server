@@ -6,12 +6,18 @@ import {
   AbortedError,
   ConnectionClosedUnexpectedlyError,
   ExceededAllocatedUsageError,
+  InvalidData,
   TimeoutError,
 } from '@util/error';
 import { timeout } from '@util/timeout';
 import { getTokenFromAuthorization, getUserIdFromToken } from '@server/auth';
 import * as transcribeService from '@server/services/trascribeService';
 import { UserId } from '@server/types';
+import { Queue } from '@util/queue';
+import { SoftLock } from '@util/lock';
+import { onAbort, rejectOnAbort } from '@util/abort';
+import { delay } from '@util/delay';
+import { getIdFromBuffer } from '@util/buffer';
 
 export enum WsCloseCode {
   Normal = 1000,
@@ -38,6 +44,7 @@ export enum InternalErrorCode {
   Unauthorized = 4,
   ShuttingDown = 5,
   NotReady = 6,
+  InvalidData = 7,
   ServerError = 99,
 }
 
@@ -71,7 +78,33 @@ export function bufferFromRawData(rawData: RawData): Buffer {
   }
 }
 
-const USER_ID_SOCKET_MAP: Record<UserId, WebSocket | undefined> = {};
+class QueueEntry {
+  private readonly _id: number;
+  private readonly _data: Buffer<ArrayBufferLike>;
+  constructor(buffer: Buffer) {
+    const { id, data } = getIdFromBuffer(buffer);
+    this._id = id;
+    this._data = data;
+    if (this._data.length === 0) {
+      throw new InvalidData('invalid message');
+    }
+  }
+  get id() {
+    return this._id;
+  }
+  get data() {
+    return this._data;
+  }
+}
+
+const USER_ID_SOCKET_MAP: Record<UserId, AuthenticatedWebSocket | undefined> =
+  {};
+const USER_ID_QUEUE_MAP: Record<UserId, SoftLock<Queue<QueueEntry>>> = {};
+
+function getOrInitQueue(userId: UserId): Queue<QueueEntry> {
+  USER_ID_QUEUE_MAP[userId] ??= new SoftLock(new Queue());
+  return USER_ID_QUEUE_MAP[userId].inner;
+}
 
 function registerSocketForUserId(clientSocket: AuthenticatedWebSocket) {
   const userId = getUserIdFromSocketOrThrow(clientSocket);
@@ -115,6 +148,11 @@ function handleTranscribeError(err: unknown, clientSocket: WebSocket) {
     closeWithError(clientSocket, WsCloseCode.PolicyViolation, {
       error: 'Exceeded allocated usage',
       code: InternalErrorCode.ExceededAllocatedUsageError,
+    });
+  } else if (err instanceof InvalidData) {
+    closeWithError(clientSocket, WsCloseCode.InvalidData, {
+      error: err.message,
+      code: InternalErrorCode.InvalidData,
     });
   } else if (err instanceof ConnectionClosedUnexpectedlyError) {
     // do nothing
@@ -192,6 +230,7 @@ async function validateUsageRemaining(clientSocket: AuthenticatedWebSocket) {
 function clientSocketCloseHandler(this: AuthenticatedWebSocket): void {
   const userId = getUserIdFromSocketOrThrow(this);
   delete USER_ID_SOCKET_MAP[userId];
+  delete USER_ID_QUEUE_MAP[userId];
 }
 
 function clientSocketMessageHandler(
@@ -206,47 +245,9 @@ function clientSocketMessageHandler(
     });
   }
   const buffer = bufferFromRawData(data);
-  const abortController = new AbortController();
-  void (async () => {
-    const unExpectedCloseHandler = () => abortController.abort();
-    this.once('close', unExpectedCloseHandler);
-    try {
-      // TODO: use a queue and offload packets to the filesystem if overloaded, this also ensures transcriptions are processed and returned in order
-      //  or add some form of counter to the requests sent from the client so the server can return them in the correct order
-      // TODO: mutex / lock for each user to prevent over usage or estimate the usage and subtract it from allowance up front
-      const result = await timeout(60_000, (abortSignal) => {
-        return transcribeService.transcribeForUser({
-          audioPacket: buffer,
-          userId,
-          abortSignal,
-        });
-      });
-      if (!isOpen(this)) {
-        // socket closed while we were processing
-        // TODO: cache result for limited time and propagate during reconnect
-        // noinspection ExceptionCaughtLocallyJS
-        throw new ConnectionClosedUnexpectedlyError(
-          'Socket closed while processing',
-        );
-      }
-      await sendData(this, result);
-      if (result.usageRemainingMs <= 0) {
-        return closeWithError(this, WsCloseCode.PolicyViolation, {
-          error: 'Exceeded allocated usage',
-          code: InternalErrorCode.ExceededAllocatedUsageError,
-        });
-      }
-    } catch (err) {
-      if (!isOpen(this)) {
-        // don't attempt to propagate the error if the client disconnected
-        return;
-      }
-      // TODO: refund user if server closing or server error
-      handleTranscribeError(err, this);
-    } finally {
-      this.off('close', unExpectedCloseHandler);
-    }
-  })();
+  const queue = getOrInitQueue(userId);
+  const queueEntry = new QueueEntry(buffer);
+  queue.enqueue(queueEntry);
 }
 
 function isReady(clientSocket: AuthenticatedWebSocket): boolean {
@@ -276,8 +277,12 @@ function handleConnection(
   void validateUsageRemaining(clientSocket);
 }
 
-function shutdownFactory(wss: WebSocketServer): () => Promise<void> {
+function shutdownFactory(
+  wss: WebSocketServer,
+  abortController: AbortController,
+): () => Promise<void> {
   return async () => {
+    abortController.abort();
     wss.off('connection', handleConnection);
     wss.clients.forEach((client) => {
       if (client.readyState !== WebSocket.OPEN) {
@@ -304,14 +309,145 @@ function shutdownFactory(wss: WebSocketServer): () => Promise<void> {
   };
 }
 
+async function processTranscribe(
+  userId: UserId,
+  queueEntry: QueueEntry,
+  mainAbortSignal: AbortSignal,
+) {
+  const clientSocket = USER_ID_SOCKET_MAP[userId];
+  if (!clientSocket) {
+    throw new Error('client socket gone');
+  }
+  const abortController = new AbortController();
+  onAbort(mainAbortSignal, () => {
+    abortController.abort();
+  });
+  const unExpectedCloseHandler = () => abortController.abort();
+  clientSocket.once('close', unExpectedCloseHandler);
+  try {
+    const result = await timeout(60_000, (abortSignal) => {
+      return transcribeService.transcribeForUser({
+        audioPacket: queueEntry.data,
+        userId,
+        abortSignal,
+      });
+    });
+    if (!isOpen(clientSocket)) {
+      // socket closed while we were processing
+      // TODO: cache result for limited time and propagate during reconnect
+      // noinspection ExceptionCaughtLocallyJS
+      throw new ConnectionClosedUnexpectedlyError(
+        'Socket closed while processing',
+      );
+    }
+    await sendData(clientSocket, { id: queueEntry.id, ...result });
+    if (result.usageRemainingMs <= 0) {
+      return closeWithError(clientSocket, WsCloseCode.PolicyViolation, {
+        error: 'Exceeded allocated usage',
+        code: InternalErrorCode.ExceededAllocatedUsageError,
+      });
+    }
+  } catch (err) {
+    if (!isOpen(clientSocket)) {
+      // don't attempt to propagate the error if the client disconnected
+      return;
+    }
+    // TODO: refund user if server closing or server error
+    handleTranscribeError(err, clientSocket);
+  } finally {
+    clientSocket.off('close', unExpectedCloseHandler);
+  }
+}
+
+function* processQueue(
+  mainAbortSignal: AbortSignal,
+): Generator<Promise<void>, void, void> {
+  for (const userId of Object.keys(USER_ID_QUEUE_MAP) as UserId[]) {
+    if (mainAbortSignal.aborted) {
+      return;
+    }
+    const clientSocket = USER_ID_SOCKET_MAP[userId];
+    if (!clientSocket) {
+      continue;
+    }
+    const lock = USER_ID_QUEUE_MAP[userId];
+    if (!lock) {
+      continue;
+    }
+    if (lock.isLocked) {
+      continue;
+    }
+    if (!lock.lock()) {
+      continue;
+    }
+    const queue = lock.inner;
+    if (!isOpen(clientSocket)) {
+      // TODO: allow reconnect to continue queue?
+      delete USER_ID_QUEUE_MAP[userId];
+      continue;
+    }
+    const nextItem = queue.dequeue();
+    if (!nextItem) {
+      lock.unlock();
+      continue;
+    }
+    yield processTranscribe(userId, nextItem, mainAbortSignal)
+      .catch((err) => {
+        // TODO: recover by saving result or restoring entry in queue
+        console.error(`failed to transcribe`, err);
+      })
+      .finally(() => {
+        lock.unlock();
+      });
+  }
+}
+
+// TODO: potentially silly, should use a job queue system like RabbitMQ
+async function queueRunner(
+  maxConcurrent: number,
+  mainAbortSignal: AbortSignal,
+) {
+  let set: Promise<void>[] = [];
+  while (true) {
+    if (mainAbortSignal.aborted) {
+      return;
+    }
+    await delay(0);
+    const queue = processQueue(mainAbortSignal);
+    for (const transcribePromise of queue) {
+      set.push(
+        transcribePromise.finally(() => {
+          // remove from set as they finish
+          const index = set.indexOf(transcribePromise);
+          void set.splice(index, 1);
+        }),
+      );
+      if (set.length == maxConcurrent) {
+        await Promise.race([rejectOnAbort(mainAbortSignal), Promise.any(set)]);
+        set = [];
+      }
+    }
+  }
+}
+
+function startQueueRunner(mainAbortSignal: AbortSignal) {
+  void queueRunner(5, mainAbortSignal).catch((err) => {
+    if (err instanceof AbortedError) {
+      return;
+    }
+    console.error('impossible?', err);
+  });
+}
+
 export function setupWebSocket(server: Server) {
   const wss = new WebSocketServer<AuthenticatedWebSocket>({
     server,
   });
 
+  const abortController = new AbortController();
+  const shutdown = shutdownFactory(wss, abortController);
+  startQueueRunner(abortController.signal);
   wss.on('connection', handleConnection);
-
-  const shutdown = shutdownFactory(wss);
 
   return {
     wss,

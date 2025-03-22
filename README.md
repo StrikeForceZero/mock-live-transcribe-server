@@ -34,9 +34,9 @@
   - TODO / not implemented:
     - mid session JWT validation via message
     - transcription queue
-      - limit number of transcriber threads/process
+      - ~~limit number of transcriber threads/process~~
       - offloading data to temp files if queue is backed up
-      - prevent client from getting transcription results out of order
+      - ~~prevent client from getting transcription results out of order~~
       - if packets don't have pauses or breaks at start/end then join them until one is found so words aren't missed
 - **Misc**
   - Opaque/Tagged Types used for `UserId`

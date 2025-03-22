@@ -13,7 +13,7 @@ import {
   UsageData,
 } from '@server/services/usageService';
 import { bufferFromRawData } from '@server/ws/wsTranscribe';
-import { bufferTextOrThrow } from '@util/buffer';
+import { BufferCounter, bufferTextOrThrow } from '@util/buffer';
 import { timeout } from '@util/timeout';
 
 const HOST = 'localhost:3000';
@@ -205,6 +205,7 @@ async function main() {
       'fetching user 1 usage stats',
       fetchUsageData(USER_1_TOKEN),
     );
+    const bufferCounter = new BufferCounter();
     while (usage1.remainingMs > 0) {
       const onMessagePromise = messageReceived<TranscribeResponse>(
         ws1,
@@ -213,7 +214,7 @@ async function main() {
       const packet = Buffer.alloc(BYTES_PER_WORD);
       await logStatusAndExecute(
         `sending ${BYTES_PER_WORD} bytes (${estimateUsageMs(packet)}ms)`,
-        sendData(ws1, packet),
+        sendData(ws1, bufferCounter.wrap(packet)),
       );
       const transcript = await logStatusAndExecute(
         'waiting for transcript',
@@ -246,10 +247,11 @@ async function main() {
     const MAX_REMAINING_PAYLOAD_SIZE = Math.ceil(
       (STARTING_USAGE_LIMIT_MS / MS_PER_WORD) * BYTES_PER_WORD,
     );
+    const bufferCounter = new BufferCounter();
     const packet = Buffer.alloc(MAX_REMAINING_PAYLOAD_SIZE);
     await logStatusAndExecute(
       `sending ${MAX_REMAINING_PAYLOAD_SIZE} bytes (${estimateUsageMs(packet)}ms)`,
-      sendData(ws2, packet),
+      sendData(ws2, bufferCounter.wrap(packet)),
     );
     const transcript = await logStatusAndExecute(
       'waiting for transcript',

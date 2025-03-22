@@ -18,9 +18,11 @@ import {
   InternalErrorCode,
   WsCloseCode,
 } from '@server/ws/wsTranscribe';
-import { bufferTextOrThrow } from '@util/buffer';
+import { BufferCounter, bufferTextOrThrow, IWrap } from '@util/buffer';
 import { delay } from '@util/delay';
 import { timeout } from '@util/timeout';
+import { Queue } from '@util/queue';
+import console from 'node:console';
 
 const limit = pLimit(1);
 
@@ -103,46 +105,6 @@ type WsEvent = WsOpenEvent | WsCloseEvent | WsErrorEvent | WsMessageEvent;
 
 type EventQueue = Queue<WsEvent>;
 
-class Queue<T> {
-  private items: T[] = [];
-
-  enqueue(item: T): void {
-    this.items.push(item);
-  }
-
-  dequeue(): T | undefined {
-    return this.items.shift();
-  }
-
-  peek(): T | undefined {
-    return this.items[0];
-  }
-
-  isEmpty(): boolean {
-    return this.items.length === 0;
-  }
-
-  size(): number {
-    return this.items.length;
-  }
-
-  clear(): void {
-    this.items = [];
-  }
-
-  toArray(): T[] {
-    return [...this.items];
-  }
-
-  findIndex(predicate: (item: T) => boolean): number {
-    return this.items.findIndex(predicate);
-  }
-
-  filter(predicate: (item: T) => boolean): T[] {
-    return this.items.filter(predicate);
-  }
-}
-
 // type WsEventHandlers = {
 //   [K in WsEventName]: Parameters<WebSocket['on']>[1] extends (
 //     event: K,
@@ -184,7 +146,10 @@ class WsEventQueueWrapper {
     message: this.onMessage.bind(this),
   };
   private totalEventCounter: number = 0;
-  constructor(readonly ws: WebSocket) {
+  constructor(
+    readonly ws: WebSocket,
+    private readonly dataWrapper?: IWrap,
+  ) {
     registerEvents(ws, this.eventHandlers);
   }
 
@@ -256,6 +221,9 @@ class WsEventQueueWrapper {
   async send(data: Buffer): Promise<void> {
     if (this.isClosed()) {
       throw new Error('socket closed');
+    }
+    if (this.dataWrapper) {
+      data = this.dataWrapper.wrap(data);
     }
     return new Promise<void>((resolve, reject) => {
       this.ws.send(data, (err) => {
@@ -471,6 +439,12 @@ async function expectWsEventMessageWithDataPartialObj<T>(
   return dataObj;
 }
 
+function wsEventQueueWrapperWithBufferCounter(
+  ws: WebSocket,
+): WsEventQueueWrapper {
+  return new WsEventQueueWrapper(ws, new BufferCounter());
+}
+
 describe('Transcribe', () => {
   let server: { shutdown: () => Promise<void[]> };
   beforeEach(async () => {
@@ -483,7 +457,7 @@ describe('Transcribe', () => {
   describe('WsEventQueueWrapper', () => {
     it('should collect events', async () => {
       await limit(async () => {
-        const ws = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+        const ws = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
         await delay(100);
         const events = ws.eventQueueToArray();
         expect(events.length).toBeGreaterThan(0);
@@ -491,7 +465,7 @@ describe('Transcribe', () => {
     });
     it('should pollQueue', async () => {
       await limit(async () => {
-        const ws = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+        const ws = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
         const events = ws.pollQueue({ timeout: 100 });
         await expect(events.next()).resolves.toEqual(
           expect.objectContaining({
@@ -509,7 +483,7 @@ describe('Transcribe', () => {
     });
     it('should only allow one pollQueue at a time', async () => {
       await limit(async () => {
-        const ws = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+        const ws = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
         const events = ws.pollQueue({ timeout: 100 });
         // consume the generator
         await expectWsEventOpen(nextEventOrThrow(events.next()));
@@ -546,7 +520,9 @@ describe('Transcribe', () => {
     }));
   it('should block unauthorized ws requests', async () =>
     await limit(async () => {
-      const ws = new WsEventQueueWrapper(new WebSocket(WS_TRANSCRIBE_URL));
+      const ws = wsEventQueueWrapperWithBufferCounter(
+        new WebSocket(WS_TRANSCRIBE_URL),
+      );
       const events = ws.pollQueue({ timeout: 100 });
       await expectWsEventIsType(
         nextEventOrThrow(events.next()),
@@ -562,7 +538,7 @@ describe('Transcribe', () => {
     }));
   it('should allow authorized ws requests', async () =>
     await limit(async () => {
-      const ws = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+      const ws = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
       const events = ws.pollQueue({ timeout: 100 });
       await expectWsEventOpen(nextEventOrThrow(events.next()));
       await expectWsEventReady(nextEventOrThrow(events.next()));
@@ -571,7 +547,7 @@ describe('Transcribe', () => {
     }));
   it('should transcribe', async () => {
     await limit(async () => {
-      const ws = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+      const ws = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
       const events = ws.pollQueue({
         // endpoint should return within time it takes to transcribe one word x 2
         timeout: BYTES_PER_WORD * 2,
@@ -593,12 +569,12 @@ describe('Transcribe', () => {
   });
   it('should only allow one connection per user/token', async () => {
     await limit(async () => {
-      const wsA1 = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+      const wsA1 = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
       const eventsA1 = wsA1.pollQueue({ timeout: 100 });
       await expectWsEventOpen(nextEventOrThrow(eventsA1.next()));
       await expectWsEventReady(nextEventOrThrow(eventsA1.next()));
 
-      const wsA2 = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+      const wsA2 = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
       const eventsA2 = wsA2.pollQueue({ timeout: 100 });
       await expectWsEventOpen(nextEventOrThrow(eventsA2.next()));
 
@@ -614,7 +590,7 @@ describe('Transcribe', () => {
       await expectWsEventReady(nextEventOrThrow(eventsA2.next()));
 
       // user 2 should be able to connect no problem
-      const wsB1 = new WsEventQueueWrapper(createWs(USER_2_TOKEN));
+      const wsB1 = wsEventQueueWrapperWithBufferCounter(createWs(USER_2_TOKEN));
       const eventsB1 = wsB1.pollQueue({ timeout: 100 });
       await expectWsEventOpen(nextEventOrThrow(eventsB1.next()));
       await expectWsEventReady(nextEventOrThrow(eventsB1.next()));
@@ -634,7 +610,7 @@ describe('Transcribe', () => {
         (MAX_REMAINING_PAYLOAD_SIZE / BYTES_PER_WORD) * MS_PER_WORD;
       // closed after usage
       {
-        const ws = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+        const ws = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
         const events = ws.pollQueue({
           // endpoint should return within time it takes to transcribe MAX_REMAINING_PAYLOAD_SIZE x 2
           timeout: MAX_REMAINING_USAGE_MS * 2,
@@ -658,7 +634,7 @@ describe('Transcribe', () => {
       }
       // closed on connection
       {
-        const ws = new WsEventQueueWrapper(createWs(USER_1_TOKEN));
+        const ws = wsEventQueueWrapperWithBufferCounter(createWs(USER_1_TOKEN));
         const events = ws.pollQueue({ timeout: 100 });
         await expectWsEventOpen(nextEventOrThrow(events.next()));
         await expectWsEventCloseHasReasonPartialObj(
@@ -671,10 +647,37 @@ describe('Transcribe', () => {
       }
     });
   });
+  it('should return transcripts in order', async () => {
+    await limit(async () => {
+      async function runTest(token: string): Promise<void> {
+        const ws = wsEventQueueWrapperWithBufferCounter(createWs(token));
+        const events = ws.pollQueue({
+          timeout: STARTING_USAGE_LIMIT_MS * 2,
+        });
+        await expectWsEventOpen(nextEventOrThrow(events.next()));
+        await expectWsEventReady(nextEventOrThrow(events.next()));
+        const numberToSend = STARTING_USAGE_LIMIT_MS / MS_PER_WORD;
+        for (let ix = 0; ix < numberToSend; ix += 1) {
+          void expect(
+            ws.send(Buffer.alloc(BYTES_PER_WORD)),
+          ).resolves.toBeUndefined();
+        }
+        for (let ix = 0; ix < numberToSend; ix += 1) {
+          await expectWsEventMessageWithDataPartialObj<
+            { id: number } & TranscribeResponse
+          >(nextEventOrThrow(events.next()), {
+            id: ix + 1,
+            usageUsedMs: MS_PER_WORD,
+          });
+        }
+      }
+      await Promise.all([runTest(USER_1_TOKEN), runTest(USER_2_TOKEN)]);
+    });
+  });
   it('should transcribe until out of usage', async () =>
     await limit(async () => {
       async function runTest(token: string): Promise<void> {
-        const ws = new WsEventQueueWrapper(createWs(token));
+        const ws = wsEventQueueWrapperWithBufferCounter(createWs(token));
         const events = ws.pollQueue({
           // endpoint should return within time it takes to transcribe one word x 2
           timeout: MS_PER_WORD * 2,
