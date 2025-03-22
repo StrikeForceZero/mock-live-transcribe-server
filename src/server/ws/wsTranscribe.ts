@@ -200,7 +200,7 @@ function getUserIdFromSocketOrThrow(
     clientSocket instanceof WebSocket &&
     'user' in clientSocket &&
     typeof clientSocket.user !== 'undefined' &&
-    clientSocket.user != null
+    clientSocket.user !== null
   ) {
     return clientSocket.user.id;
   }
@@ -407,7 +407,7 @@ async function queueRunner(
   maxConcurrent: number,
   mainAbortSignal: AbortSignal,
 ) {
-  let set: Promise<void>[] = [];
+  const set = new Set<Promise<void>>();
   while (true) {
     if (mainAbortSignal.aborted) {
       return;
@@ -415,16 +415,15 @@ async function queueRunner(
     await delay(0);
     const queue = processQueue(mainAbortSignal);
     for (const transcribePromise of queue) {
-      set.push(
+      set.add(
         transcribePromise.finally(() => {
           // remove from set as they finish
-          const index = set.indexOf(transcribePromise);
-          void set.splice(index, 1);
+          set.delete(transcribePromise);
         }),
       );
-      if (set.length == maxConcurrent) {
+      if (set.size === maxConcurrent) {
         await Promise.race([rejectOnAbort(mainAbortSignal), Promise.any(set)]);
-        set = [];
+        set.clear();
       }
     }
   }
