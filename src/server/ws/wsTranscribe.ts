@@ -44,6 +44,7 @@ export enum InternalErrorCode {
 type AuthenticatedWebSocket = WebSocket &
   typeof WebSocket & {
     user?: { id: UserId } | null;
+    ready?: boolean;
   };
 
 function authenticateClient(req: IncomingMessage): { id: UserId } | null {
@@ -71,7 +72,6 @@ export function bufferFromRawData(rawData: RawData): Buffer {
 }
 
 const USER_ID_SOCKET_MAP: Record<UserId, WebSocket | undefined> = {};
-const USER_ID_READY_SOCKET_MAP: Record<UserId, boolean | undefined> = {};
 
 function registerSocketForUserId(clientSocket: WebSocket, userId: UserId) {
   const existingSocket = USER_ID_SOCKET_MAP[userId];
@@ -85,7 +85,6 @@ function registerSocketForUserId(clientSocket: WebSocket, userId: UserId) {
     );
   }
   USER_ID_SOCKET_MAP[userId] = clientSocket;
-  USER_ID_READY_SOCKET_MAP[userId] = false;
 }
 
 export type CloseReasonObj = { error: unknown; code: InternalErrorCode };
@@ -155,24 +154,21 @@ function isOpen(socket: WebSocket): boolean {
   return socket.readyState === WebSocket.OPEN;
 }
 
-// TODO: cleanup
 async function validateUsageRemaining(
   clientSocket: AuthenticatedWebSocket,
   userId: UserId,
-  onReady: () => void,
 ) {
   const usageData = await usageService.getUsage(userId).catch((err) => {
     console.error('error when checking usage: ', err);
     throw err;
   });
   if (usageData.remainingMs <= 0) {
-    closeWithError(clientSocket, WsCloseCode.PolicyViolation, {
+    return closeWithError(clientSocket, WsCloseCode.PolicyViolation, {
       error: 'Exceeded allocated usage',
       code: InternalErrorCode.ExceededAllocatedUsageError,
     });
-    return;
   }
-  onReady();
+  clientSocket.ready = true;
   try {
     await sendData(clientSocket, { event: 'ready' });
   } catch (err) {
@@ -183,7 +179,6 @@ async function validateUsageRemaining(
 function handleCloseFactory(userId: UserId): () => void {
   return () => {
     delete USER_ID_SOCKET_MAP[userId];
-    delete USER_ID_READY_SOCKET_MAP[userId];
   };
 }
 
@@ -191,7 +186,7 @@ function handleMessageFactory(
   userId: UserId,
 ): (this: AuthenticatedWebSocket, data: RawData) => void {
   return function (this: AuthenticatedWebSocket, data) {
-    if (!isReady(userId)) {
+    if (!isReady(this)) {
       return closeWithError(this, WsCloseCode.PolicyViolation, {
         error: 'not ready',
         code: InternalErrorCode.NotReady,
@@ -242,8 +237,8 @@ function handleMessageFactory(
   };
 }
 
-function isReady(userId: UserId): boolean {
-  return USER_ID_READY_SOCKET_MAP[userId] ?? false;
+function isReady(clientSocket: AuthenticatedWebSocket): boolean {
+  return clientSocket.ready ?? false;
 }
 
 function handleConnection(
@@ -267,13 +262,12 @@ function handleConnection(
   clientSocket.once('close', closeHandler);
   clientSocket.on('message', messageHandler);
 
-  void validateUsageRemaining(clientSocket, userId, () => {
-    USER_ID_READY_SOCKET_MAP[userId] = true;
-  });
+  void validateUsageRemaining(clientSocket, userId);
 }
 
 function shutdownFactory(wss: WebSocketServer): () => Promise<void> {
   return async () => {
+    wss.off('connection', handleConnection);
     wss.clients.forEach((client) => {
       if (client.readyState !== WebSocket.OPEN) {
         return;
