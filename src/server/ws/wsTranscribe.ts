@@ -97,18 +97,19 @@ class QueueEntry {
   }
 }
 
-const USER_ID_SOCKET_MAP: Record<UserId, AuthenticatedWebSocket | undefined> =
-  {};
-const USER_ID_QUEUE_MAP: Record<UserId, SoftLock<Queue<QueueEntry>>> = {};
+const USER_ID_SOCKET_MAP: Map<UserId, AuthenticatedWebSocket> = new Map();
+const USER_ID_QUEUE_MAP: Map<UserId, SoftLock<Queue<QueueEntry>>> = new Map();
 
 function getOrInitQueue(userId: UserId): Queue<QueueEntry> {
-  USER_ID_QUEUE_MAP[userId] ??= new SoftLock(new Queue());
-  return USER_ID_QUEUE_MAP[userId].inner;
+  if (!USER_ID_QUEUE_MAP.has(userId)) {
+    USER_ID_QUEUE_MAP.set(userId, new SoftLock(new Queue()));
+  }
+  return USER_ID_QUEUE_MAP.get(userId)!.inner;
 }
 
 function registerSocketForUserId(clientSocket: AuthenticatedWebSocket) {
   const userId = getUserIdFromSocketOrThrow(clientSocket);
-  const existingSocket = USER_ID_SOCKET_MAP[userId];
+  const existingSocket = USER_ID_SOCKET_MAP.get(userId);
   if (existingSocket) {
     existingSocket.close(
       WsCloseCode.PolicyViolation,
@@ -118,7 +119,7 @@ function registerSocketForUserId(clientSocket: AuthenticatedWebSocket) {
       }),
     );
   }
-  USER_ID_SOCKET_MAP[userId] = clientSocket;
+  USER_ID_SOCKET_MAP.set(userId, clientSocket);
 }
 
 export type CloseReasonObj = { error: unknown; code: InternalErrorCode };
@@ -229,8 +230,8 @@ async function validateUsageRemaining(clientSocket: AuthenticatedWebSocket) {
 
 function clientSocketCloseHandler(this: AuthenticatedWebSocket): void {
   const userId = getUserIdFromSocketOrThrow(this);
-  delete USER_ID_SOCKET_MAP[userId];
-  delete USER_ID_QUEUE_MAP[userId];
+  USER_ID_SOCKET_MAP.delete(userId);
+  USER_ID_QUEUE_MAP.delete(userId);
 }
 
 function clientSocketMessageHandler(
@@ -314,7 +315,7 @@ async function processTranscribe(
   queueEntry: QueueEntry,
   mainAbortSignal: AbortSignal,
 ) {
-  const clientSocket = USER_ID_SOCKET_MAP[userId];
+  const clientSocket = USER_ID_SOCKET_MAP.get(userId);
   if (!clientSocket) {
     throw new Error('client socket gone');
   }
@@ -363,15 +364,15 @@ async function processTranscribe(
 function* processQueue(
   mainAbortSignal: AbortSignal,
 ): Generator<Promise<void>, void, void> {
-  for (const userId of Object.keys(USER_ID_QUEUE_MAP) as UserId[]) {
+  for (const userId of USER_ID_QUEUE_MAP.keys()) {
     if (mainAbortSignal.aborted) {
       return;
     }
-    const clientSocket = USER_ID_SOCKET_MAP[userId];
+    const clientSocket = USER_ID_SOCKET_MAP.get(userId);
     if (!clientSocket) {
       continue;
     }
-    const lock = USER_ID_QUEUE_MAP[userId];
+    const lock = USER_ID_QUEUE_MAP.get(userId);
     if (!lock) {
       continue;
     }
@@ -384,7 +385,7 @@ function* processQueue(
     const queue = lock.inner;
     if (!isOpen(clientSocket)) {
       // TODO: allow reconnect to continue queue?
-      delete USER_ID_QUEUE_MAP[userId];
+      USER_ID_QUEUE_MAP.delete(userId);
       continue;
     }
     const nextItem = queue.dequeue();
